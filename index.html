@@ -116,6 +116,16 @@
   .q-text{font:500 22px/1.28 var(--disp);letter-spacing:.005em;color:var(--ink);margin-bottom:6px;}
   .q-help{font:400 13px/1.5 var(--body);color:var(--muted);margin-bottom:22px;}
 
+  /* ---- single-page survey ---- */
+  .survey-one{padding:18px 16px 28px;}
+  .survey-one .intro{background:linear-gradient(165deg,var(--blue-500),var(--blue-700));color:#fff;border-radius:16px;padding:16px 18px;margin-bottom:10px;}
+  .survey-one .intro h1{font:600 19px/1.2 var(--disp);letter-spacing:.01em;margin-bottom:5px;}
+  .survey-one .intro p{font:400 12px/1.5 var(--body);opacity:.92;}
+  .q-card{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:var(--shadow-sm);scroll-margin-top:12px;transition:border-color .15s,box-shadow .15s;}
+  .q-card .q-text-sm{font:500 16px/1.3 var(--disp);letter-spacing:.005em;color:var(--ink);margin:4px 0 8px;}
+  .q-card .q-help{margin-bottom:12px;}
+  .q-card.missing{border-color:var(--danger);box-shadow:0 0 0 3px rgba(209,73,91,.14);}
+
   .opts{display:flex;flex-direction:column;gap:11px;}
   .opt{display:flex;align-items:center;gap:13px;padding:16px;border:1.5px solid var(--line);border-radius:14px;background:var(--white);cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s;font:500 15px/1.3 var(--body);color:var(--ink);}
   .opt:hover{border-color:var(--blue-300);}
@@ -296,7 +306,7 @@ const Q=[
 
 /* ---------- state ---------- */
 const app=document.getElementById('app');
-let ans={}, idx=0, ended=false;
+let ans={}, ended=false;
 let dashData=[], dashSource='device', dashFilter='all', dashLoading=false;
 
 const I={
@@ -336,7 +346,7 @@ function isAnswered(q){
    HOME
    ========================================================= */
 function renderHome(){
-  ans={}; idx=0; ended=false;
+  ans={}; ended=false;
   const n=records.length, connected=!!GAS_URL;
   app.innerHTML=`
     <div class="body"><div class="home">
@@ -350,7 +360,7 @@ function renderHome(){
         <p class="section-eyebrow">What would you like to do?</p>
         <button class="action-card" onclick="startSurvey()">
           <span class="ic blue">${I.clip}</span>
-          <span class="tx"><h3>Collect data</h3><span>Start a new interview — one question per screen</span></span>
+          <span class="tx"><h3>Collect data</h3><span>Start a new interview — all questions on one page</span></span>
           <span class="arrow">${I.arrow}</span>
         </button>
         <button class="action-card" onclick="openRecords()">
@@ -377,74 +387,113 @@ function setGAS(){
 }
 
 /* =========================================================
-   SURVEY (one question per page)
+   SURVEY — all questions on one scrolling page
    ========================================================= */
-function startSurvey(){ ans={date:todayISO()}; idx=0; ended=false; renderQuestion(); }
+function startSurvey(){ ans={date:todayISO()}; ended=false; renderSurveyOnePage(); }
 
-function renderQuestion(){
-  const vis=visibleList();
-  while(idx<Q.length && Q[idx].when && !Q[idx].when(ans)) idx++;
-  if(idx>=Q.length){ renderReview(); return; }
-  const q=Q[idx];
-  const pos=vis.indexOf(q)+1, total=vis.length, pct=Math.round((pos-1)/total*100);
+/* one option row */
+function optHtml(qid,val,lk,cls){
+  const sel=ans[qid]===val;
+  return `<div class="opt ${lk?'likert':''} ${cls||''} ${sel?'sel':''}" data-qid="${esc(qid)}" data-val="${esc(val)}" data-lk="${lk?1:0}"><span class="mark"></span><span>${esc(val)}</span></div>`;
+}
 
+/* one question card */
+function questionCard(q){
   let control='';
-  if(q.type==='choice'||q.type==='likert'){
-    const opts=q.type==='likert'?LIKERT.map(o=>o.value):q.options;
-    control='<div class="opts">'+opts.map(opt=>{
-      const sel=ans[q.id]===opt, lk=q.type==='likert';
-      const cls=lk?LIKERT.find(o=>o.value===opt).cls:'';
-      return `<div class="opt ${lk?'likert':''} ${cls} ${sel?'sel':''}" onclick="pick('${esc(opt).replace(/'/g,"\\'")}',${lk})"><span class="mark"></span><span>${esc(opt)}</span></div>`;
-    }).join('')+'</div>';
+  if(q.type==='choice'){
+    control=`<div class="opts">${q.options.map(o=>optHtml(q.id,o,false,'')).join('')}</div>`;
     if(q.other){
       const show=ans[q.id]===q.other;
-      control+=`<div id="otherBox" style="${show?'':'display:none'}"><div class="other-box"><input type="text" placeholder="Please specify…" value="${esc(ans[q.id+'_other']||'')}" oninput="ans['${q.id}_other']=this.value;refreshNext();"></div></div>`;
+      control+=`<div id="other_${q.id}" style="${show?'':'display:none'}"><div class="other-box"><input type="text" placeholder="Please specify…" data-anskey="${q.id}_other" value="${esc(ans[q.id+'_other']||'')}"></div></div>`;
     }
+  } else if(q.type==='likert'){
+    control=`<div class="opts">${LIKERT.map(o=>optHtml(q.id,o.value,true,o.cls)).join('')}</div>`;
   } else if(q.type==='auto'){
-    const val=genId(ans.facility); ans.qid=val;
-    control=`<div class="field"><input type="text" value="${esc(val)}" readonly></div>`;
+    control=`<div class="field"><input id="field_qid" type="text" value="${esc(ans.qid||'')}" readonly></div>`;
   } else {
     const t=q.type==='number'?'number':q.type==='date'?'date':'text';
-    control=`<div class="field"><input type="${t}" ${q.ph?`placeholder="${esc(q.ph)}"`:''} value="${esc(ans[q.id]||'')}" oninput="ans['${q.id}']=this.value;refreshNext();"></div>`;
+    const val=q.type==='date'?esc(ans[q.id]||todayISO()):esc(ans[q.id]||'');
+    control=`<div class="field"><input type="${t}" ${q.ph?`placeholder="${esc(q.ph)}"`:''} data-anskey="${q.id}" value="${val}"></div>`;
   }
+  return `<div class="q-card" id="card_${q.id}">
+    <span class="q-eyebrow">${esc(q.id)}</span>
+    <div class="q-text-sm">${esc(q.q)}</div>
+    ${q.help?`<div class="q-help">${esc(q.help)}</div>`:''}
+    ${control}
+  </div>`;
+}
 
-  const last=pos===total;
-  app.innerHTML=`
-    <div class="appbar">
-      <button class="ico-btn" onclick="prevQ()">${idx===0?I.home:I.back}</button>
-      <div class="titles"><div class="eyebrow">${esc(q.s)}</div><div class="title">IPTp-SP Interview</div></div>
+function renderSurveyOnePage(){
+  let html=`<div class="appbar">
+      <button class="ico-btn" onclick="renderHome()">${I.home}</button>
+      <div class="titles"><div class="eyebrow">Njala University · MPH</div><div class="title">IPTp-SP Interview</div></div>
     </div>
-    <div class="progress-wrap">
-      <div class="progress-row"><span class="step">Question ${pos} of ${total}</span><span class="pct">${pct}%</span></div>
-      <div class="track"><div class="fill" style="width:${pct}%"></div></div>
-    </div>
-    <div class="body"><div class="q-wrap" id="qwrap">
-      <span class="q-eyebrow">${esc(q.id)}</span>
-      <div class="q-text">${esc(q.q)}</div>
-      ${q.help?`<div class="q-help">${esc(q.help)}</div>`:''}
-      ${control}
-    </div></div>
-    <div class="footer"><button class="btn btn-primary" id="nextBtn" onclick="nextQ()">${last?'Review &amp; submit':'Next'}</button></div>`;
-  refreshNext();
+    <div class="body"><div class="survey-one" id="surveyBody">
+      <div class="intro"><h1>IPTp-SP Uptake Survey</h1><p>Complete every question below, then submit. Choosing “Other” opens a box to specify. Some questions appear only when relevant.</p></div>`;
+  let cur='';
+  Q.forEach(q=>{
+    if(q.s!==cur){ cur=q.s; html+=`<div class="dash-sec">${esc(cur)}</div>`; }
+    html+=questionCard(q);
+  });
+  html+=`</div></div>
+    <div class="footer"><button class="btn btn-primary btn-block" id="submitBtn" onclick="submitOnePage()">${GAS_URL?'Submit interview':'Save interview'}</button></div>`;
+  app.innerHTML=html;
+  wireSurvey();
+  onAnsChange();
 }
-function pick(val,lk){
-  const q=Q[idx]; ans[q.id]=val;
-  if(q.other){ const b=document.getElementById('otherBox'); if(b) b.style.display=(val===q.other)?'':'none'; }
-  document.querySelectorAll('#qwrap .opt').forEach(el=>el.classList.remove('sel'));
-  event.currentTarget.classList.add('sel'); refreshNext();
+
+/* event delegation for the whole form */
+function wireSurvey(){
+  const body=document.getElementById('surveyBody');
+  body.addEventListener('click',e=>{
+    const opt=e.target.closest('.opt'); if(!opt) return;
+    const qid=opt.dataset.qid, val=opt.dataset.val;
+    ans[qid]=val;
+    const card=document.getElementById('card_'+qid);
+    card.querySelectorAll('.opt').forEach(el=>el.classList.remove('sel'));
+    opt.classList.add('sel'); card.classList.remove('missing');
+    const q=Q.find(x=>x.id===qid);
+    if(q&&q.other){ const ob=document.getElementById('other_'+qid); if(ob) ob.style.display=(val===q.other)?'':'none'; }
+    onAnsChange();
+  });
+  body.addEventListener('input',e=>{
+    const inp=e.target.closest('input'); if(!inp||!inp.dataset.anskey) return;
+    ans[inp.dataset.anskey]=inp.value;
+    const card=inp.closest('.q-card'); if(card) card.classList.remove('missing');
+    onAnsChange();
+  });
 }
-function refreshNext(){ const b=document.getElementById('nextBtn'); if(b) b.disabled=!isAnswered(Q[idx]); }
-function nextQ(){
-  const q=Q[idx];
-  if(!isAnswered(q)){ toast('Please answer to continue'); return; }
-  if(q.id==='consent'&&ans.consent==='No'){ ended=true; finishAndSubmit(); return; }
-  idx++; while(idx<Q.length&&Q[idx].when&&!Q[idx].when(ans)) idx++;
-  if(idx>=Q.length) renderReview(); else renderQuestion();
+
+/* Recompute the auto ID, hide questions whose conditions aren't met,
+   and collapse to just the consent question if the participant declines. */
+function onAnsChange(){
+  const qidEl=document.getElementById('field_qid');
+  if(qidEl){ ans.qid=genId(ans.facility); qidEl.value=ans.qid; }
+  const declined=ans.consent==='No';
+  Q.forEach(q=>{
+    const card=document.getElementById('card_'+q.id); if(!card) return;
+    if(q.id==='consent'){ card.style.display=''; return; }
+    let show=true;
+    if(declined) show=false;
+    else if(q.when) show=!!q.when(ans);
+    card.style.display=show?'':'none';
+  });
+  const sb=document.getElementById('submitBtn');
+  if(sb) sb.textContent=declined?'End interview (declined)':(GAS_URL?'Submit interview':'Save interview');
 }
-function prevQ(){
-  if(idx===0){ renderHome(); return; }
-  idx--; while(idx>0&&Q[idx].when&&!Q[idx].when(ans)) idx--;
-  renderQuestion();
+
+function submitOnePage(){
+  if(ans.consent==='No'){ ended=true; finishAndSubmit(); return; }
+  const missing=visibleList().filter(q=>!isAnswered(q));
+  if(missing.length){
+    document.querySelectorAll('.q-card.missing').forEach(el=>el.classList.remove('missing'));
+    missing.forEach(q=>{ const c=document.getElementById('card_'+q.id); if(c) c.classList.add('missing'); });
+    const first=document.getElementById('card_'+missing[0].id);
+    if(first) first.scrollIntoView({behavior:'smooth',block:'center'});
+    toast(missing.length+' unanswered question'+(missing.length>1?'s':''));
+    return;
+  }
+  ended=false; finishAndSubmit();
 }
 
 function finishAndSubmit(){
@@ -468,27 +517,7 @@ function sendToSheet(rec,cb){
   setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){} cb&&cb(false); } },15000);
 }
 function setSyncStatus(cls,text){ const el=document.getElementById('syncPill'); if(!el) return; el.className='sync '+cls; el.textContent=text; }
-function reviewBack(){ idx=Q.length; prevQ(); }
-function renderReview(){
-  const vis=visibleList();
-  let body='',cur='';
-  vis.forEach(q=>{
-    let v = q.type==='auto'?ans.qid:ans[q.id];
-    if(v===undefined||v==='') v='—';
-    else if(q.other&&v===q.other&&ans[q.id+'_other']) v='Other — '+ans[q.id+'_other'];
-    if(q.s!==cur){ cur=q.s; body+=`<div class="rd-sec">${esc(cur)}</div>`; }
-    body+=`<div class="rd-item"><span class="q">${esc(q.id)}. ${esc(q.q)}</span><span class="a">${esc(v)}</span></div>`;
-  });
-  app.innerHTML=`<div class="appbar">
-      <button class="ico-btn" onclick="reviewBack()">${I.back}</button>
-      <div class="titles"><div class="eyebrow">Almost done</div><div class="title">Review answers</div></div>
-    </div>
-    <div class="body"><div class="rec-detail">
-      <div class="rd-head"><div class="id">${esc(ans.qid||'—')}</div><div class="meta">${esc(ans.facility||'—')} · ${esc(ans.date||'')}</div></div>
-      ${body}
-    </div></div>
-    <div class="footer"><button class="btn btn-primary btn-block" onclick="finishAndSubmit()">${GAS_URL?'Submit to Google Sheets':'Save interview'}</button></div>`;
-}
+
 function renderDone(declined){
   const synced=!!GAS_URL;
   app.innerHTML=`<div class="body"><div class="done">
