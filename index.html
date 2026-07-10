@@ -123,6 +123,7 @@
   .survey-one .intro p{font:400 12px/1.5 var(--body);opacity:.92;}
   .q-card{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:var(--shadow-sm);scroll-margin-top:12px;transition:border-color .15s,box-shadow .15s;}
   .q-card .q-text-sm{font:500 16px/1.3 var(--disp);letter-spacing:.005em;color:var(--ink);margin:4px 0 8px;}
+  .q-card .q-text-sm .req{color:var(--danger);font-weight:700;margin-left:2px;}
   .q-card .q-help{margin-bottom:12px;}
   .q-card.missing{border-color:var(--danger);box-shadow:0 0 0 3px rgba(209,73,91,.14);}
 
@@ -282,7 +283,7 @@ const Q=[
   {id:'C2',s:SEC.c,type:'choice',q:'What is the main purpose of IPTp-SP (Fansidar)?',options:['Prevent malaria during pregnancy','Treat malaria','Don’t know']},
   {id:'C3',s:SEC.c,type:'choice',q:'When should IPTp-SP be started?',options:['First trimester','Second trimester','Third trimester','Don’t know']},
   {id:'C4',s:SEC.c,type:'choice',q:'Should IPTp-SP be taken more than once during pregnancy?',options:['Yes','No','Don’t know']},
-  {id:'C5',s:SEC.c,type:'choice',q:'What is your main source of information about IPTp-SP?',options:['Health worker','Community Health Worker','Radio/TV','Family/Friends','Other'],other:'Other'},
+  {id:'C5',s:SEC.c,type:'choice',q:'What is your main source of information about IPTp-SP?',options:['Health worker','Community Health Worker','Radio/TV','Family/Friends','Other'],other:'Other',when:a=>a.C1==='Yes'},
 
   {id:'D1',s:SEC.d,type:'likert',q:'Malaria during pregnancy is dangerous.'},
   {id:'D2',s:SEC.d,type:'likert',q:'IPTp-SP helps prevent malaria during pregnancy.'},
@@ -294,7 +295,7 @@ const Q=[
   {id:'D8',s:SEC.d,type:'likert',q:'I intend to complete all recommended IPTp-SP doses before delivery.'},
 
   {id:'E1',s:SEC.e,type:'choice',q:'Have you received IPTp-SP (Fansidar) during this pregnancy?',options:['Yes','No']},
-  {id:'E2',s:SEC.e,type:'choice',q:'Were you asked to swallow the tablets at the facility under the supervision of a healthcare worker?',options:['Yes','No']},
+  {id:'E2',s:SEC.e,type:'choice',q:'Were you asked to swallow the tablets at the facility under the supervision of a healthcare worker?',options:['Yes','No'],when:a=>a.E1==='Yes'},
   {id:'E3',s:SEC.e,type:'choice',q:'If you did not receive or take IPTp-SP, what was the main reason?',options:['Not yet eligible','Drug not available','Fear of side effects','Refused medication','Health worker did not offer it','Other'],other:'Other',when:a=>a.E1==='No'||a.E2==='No'},
 
   {id:'V1',s:SEC.v,type:'number',q:'Gestational age (weeks)',help:'From the ANC card.',ph:'e.g. 24'},
@@ -413,11 +414,13 @@ function questionCard(q){
   } else {
     const t=q.type==='number'?'number':q.type==='date'?'date':'text';
     const val=q.type==='date'?esc(ans[q.id]||todayISO()):esc(ans[q.id]||'');
-    control=`<div class="field"><input type="${t}" ${q.ph?`placeholder="${esc(q.ph)}"`:''} data-anskey="${q.id}" value="${val}"></div>`;
+    const minAttr=q.type==='number'?' min="0"':'';
+    control=`<div class="field"><input type="${t}"${minAttr} ${q.ph?`placeholder="${esc(q.ph)}"`:''} data-anskey="${q.id}" value="${val}"></div>`;
   }
+  const reqMark=q.type==='auto'?'':' <span class="req" title="Required">*</span>';
   return `<div class="q-card" id="card_${q.id}">
     <span class="q-eyebrow">${esc(q.id)}</span>
-    <div class="q-text-sm">${esc(q.q)}</div>
+    <div class="q-text-sm">${esc(q.q)}${reqMark}</div>
     ${q.help?`<div class="q-help">${esc(q.help)}</div>`:''}
     ${control}
   </div>`;
@@ -429,7 +432,7 @@ function renderSurveyOnePage(){
       <div class="titles"><div class="eyebrow">Njala University · MPH</div><div class="title">IPTp-SP Interview</div></div>
     </div>
     <div class="body"><div class="survey-one" id="surveyBody">
-      <div class="intro"><h1>IPTp-SP Uptake Survey</h1><p>Complete every question below, then submit. Choosing “Other” opens a box to specify. Some questions appear only when relevant.</p></div>`;
+      <div class="intro"><h1>IPTp-SP Uptake Survey</h1><p>All questions marked <b>*</b> are required and must be answered before submitting. Some questions appear only when relevant to a previous answer. Choosing “Other” opens a box to specify.</p></div>`;
   let cur='';
   Q.forEach(q=>{
     if(q.s!==cur){ cur=q.s; html+=`<div class="dash-sec">${esc(cur)}</div>`; }
@@ -466,6 +469,18 @@ function wireSurvey(){
 
 /* Recompute the auto ID, hide questions whose conditions aren't met,
    and collapse to just the consent question if the participant declines. */
+/* Wipe the stored answer for a question that skip logic has hidden,
+   so skipped questions never leave stale values in the record. */
+function clearAnswer(q,card){
+  if(q.id in ans) delete ans[q.id];
+  if((q.id+'_other') in ans) delete ans[q.id+'_other'];
+  if(!card) return;
+  card.querySelectorAll('.opt.sel').forEach(el=>el.classList.remove('sel'));
+  const ob=document.getElementById('other_'+q.id); if(ob){ ob.style.display='none'; }
+  card.querySelectorAll('input[data-anskey]').forEach(i=>{ i.value=''; });
+  card.classList.remove('missing');
+}
+
 function onAnsChange(){
   const qidEl=document.getElementById('field_qid');
   if(qidEl){ ans.qid=genId(ans.facility); qidEl.value=ans.qid; }
@@ -473,10 +488,10 @@ function onAnsChange(){
   Q.forEach(q=>{
     const card=document.getElementById('card_'+q.id); if(!card) return;
     if(q.id==='consent'){ card.style.display=''; return; }
-    let show=true;
-    if(declined) show=false;
-    else if(q.when) show=!!q.when(ans);
+    if(declined){ card.style.display='none'; return; }   // collapse, keep answers
+    const show=q.when?!!q.when(ans):true;
     card.style.display=show?'':'none';
+    if(!show) clearAnswer(q,card);                        // skipped -> clear
   });
   const sb=document.getElementById('submitBtn');
   if(sb) sb.textContent=declined?'End interview (declined)':(GAS_URL?'Submit interview':'Save interview');
