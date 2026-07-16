@@ -619,7 +619,10 @@ function renderRecords(){
         ${up?`<span class="pill ${up==='Yes'?'yes':'no'}">IPTp ${esc(up)}</span>`:`<span class="pill no">Declined</span>`}
       </div>`;}).join(''):'<div style="font:400 13px var(--body);color:var(--muted);padding:14px 0">No records for this facility.</div>'}
     </div>
-    ${GAS_URL?`<button class="btn btn-primary btn-block" id="syncAllBtn" onclick="syncAllToSheet()" style="margin-bottom:12px" ${pendingCount()?'':'disabled'}>☁ Sync to Google Sheet${pendingCount()?' ('+pendingCount()+' pending)':' — all synced'}</button>`:`<button class="btn btn-primary btn-block" onclick="setGAS()" style="margin-bottom:12px">Connect Google Sheet to sync</button>`}
+    ${GAS_URL?`
+      <button class="btn btn-primary btn-block" id="syncAllBtn" onclick="syncAllToSheet(false)" style="margin-bottom:10px" ${pendingCount()?'':'disabled'}>☁ Sync pending${pendingCount()?' ('+pendingCount()+')':' — all synced'}</button>
+      <button class="btn btn-ghost btn-block" id="syncAllForceBtn" onclick="syncAllToSheet(true)" style="margin-bottom:12px" ${records.length?'':'disabled'}>⟳ Sync ALL ${records.length} record${records.length===1?'':'s'} (re-check every one)</button>
+    `:`<button class="btn btn-primary btn-block" onclick="setGAS()" style="margin-bottom:12px">Connect Google Sheet to sync</button>`}
     <div class="dash-tools">
       <button class="btn btn-ghost" onclick="exportData(recFiltered().map(x=>x.r),'iptp_records.csv')">Export CSV</button>
       <button class="btn btn-danger" onclick="clearAll()">Clear all</button>
@@ -868,15 +871,21 @@ function clearAll(){ if(!confirm('Delete all interviews stored on this phone?'))
 
 function pendingCount(){ return records.filter(r=>r._synced!==true).length; }
 
-/* Push every not-yet-synced interview to the Google Sheet, one at a time.
-   Records already confirmed (_synced===true) are skipped, and the server
-   dedupes on _uid, so this is safe to run repeatedly without duplicating. */
-function syncAllToSheet(){
+/* Push interviews to the Google Sheet one at a time.
+   - syncAllToSheet(false)  -> only records not yet confirmed synced (fast).
+   - syncAllToSheet(true)    -> EVERY record, synced or not (re-check).
+   Either way the server dedupes on _uid, so nothing is ever duplicated. */
+function syncAllToSheet(forceAll){
   if(!GAS_URL){ toast('Connect a Google Sheet first'); return; }
-  const pending=records.filter(r=>r._synced!==true);
-  if(!pending.length){ toast('All records already synced'); return; }
-  if(!confirm('Send '+pending.length+' unsynced interview'+(pending.length>1?'s':'')+' to the Google Sheet?\n\nAlready-synced records are skipped, so nothing is duplicated.')) return;
-  const btn=document.getElementById('syncAllBtn'); if(btn) btn.disabled=true;
+  const pending = forceAll ? records.slice() : records.filter(r=>r._synced!==true);
+  if(!pending.length){ toast(forceAll?'No records on this device':'All records already synced'); return; }
+  const msg = forceAll
+    ? 'Re-check all '+pending.length+' record'+(pending.length>1?'s':'')+' against the Google Sheet?\n\nRecords already in the Sheet are skipped automatically — nothing is duplicated.'
+    : 'Send '+pending.length+' unsynced interview'+(pending.length>1?'s':'')+' to the Google Sheet?\n\nAlready-synced records are skipped, so nothing is duplicated.';
+  if(!confirm(msg)) return;
+  const btn=document.getElementById(forceAll?'syncAllForceBtn':'syncAllBtn');
+  const btns=document.querySelectorAll('#syncAllBtn,#syncAllForceBtn');
+  btns.forEach(b=>b.disabled=true);
   let i=0, ok=0, fail=0;
   const step=()=>{
     if(i>=pending.length){
