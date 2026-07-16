@@ -1,4 +1,4 @@
-<!DOCTYPE html>    
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -263,6 +263,26 @@ let records = Store.get(REC_KEY,[]);
   } else {
     GAS_URL = Store.get(URL_KEY, DEFAULT_GAS_URL) || DEFAULT_GAS_URL;
   }
+})();
+
+/* Questionnaire IDs are simple per-facility, per-device counters (phu1_01, phu2_01…).
+   Duplicate IDs across phones are ALLOWED. The Sheet still avoids writing the same
+   record twice because it de-duplicates on Submitted-at + Questionnaire ID. */
+
+/* Undo any earlier device-code IDs: restore the original ID saved in _idLegacy so a
+   phone that ran the previous build returns to the plain phu1_01 format. Harmless to
+   run every load — records without _idLegacy are left untouched. */
+(function restoreLegacyIds(){
+  let changed=false;
+  records.forEach(r=>{
+    if(r._idLegacy){
+      r._id=r._idLegacy; if(r.qid) r.qid=r._idLegacy;
+      delete r._idLegacy; delete r.device;
+      r._synced=false;  // ID changed back -> allow it to sync again
+      changed=true;
+    }
+  });
+  if(changed) Store.set(REC_KEY,records);
 })();
 
 /* =========================================================
