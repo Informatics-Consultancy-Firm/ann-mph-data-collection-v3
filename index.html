@@ -238,6 +238,7 @@
    or tap "Connect Google Sheet" on the home screen.
    ========================================================= */
 const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbweUlnek3AAc0rflT1M7HKn8W0eLkiyqiBDEuDRojO5mZizIUySUC5Xm-u0p6ZBGTqt/exec";
+const APP_VERSION = "2026-07-16b";
 let GAS_URL = DEFAULT_GAS_URL;
 
 /* ---------- storage (localStorage w/ in-memory fallback) ---------- */
@@ -413,6 +414,7 @@ function renderHome(){
           <span class="tx"><h3>Dashboard</h3><span>Live charts from Google Sheets</span></span>
           <span class="arrow">${I.arrow}</span>
         </button>
+        <p style="text-align:center;font:500 11px/1.4 var(--body);color:var(--muted);margin:18px 0 4px">Build ${APP_VERSION}</p>
       </div>
     </div></div>`;
 }
@@ -427,23 +429,32 @@ function setGAS(){
   GAS_URL=t; Store.set(URL_KEY,t); toast('Google Sheet connected'); renderHome();
 }
 
-/* Ping the Google Sheet and report clearly what happened. Helps tell apart a
-   network/firewall block, a browser-extension block, and a bad deployment. */
+/* Ping the Google Sheet and report clearly what happened. Tries fetch first
+   (same as the real sync), then JSONP, so its verdict matches actual behaviour. */
 function testConn(){
   if(!GAS_URL){ toast('Connect a Google Sheet first'); return; }
   toast('Testing connection…');
-  const fn='__p'+Date.now(); let done=false;
-  const s=document.createElement('script');
-  window[fn]=res=>{ done=true; delete window[fn]; s.remove();
-    if(res&&res.ok){ alert('✓ Connection OK.\n\nReached the Google Sheet — it currently has '+res.rows+' row(s).\n\nIf a sync still fails on this device, it is almost certainly a browser extension / ad-blocker. Try an incognito window or a different browser.'); }
-    else { alert('Reached the server, but it did not answer as expected.\n\nRe-check the Apps Script deployment: Who has access must be "Anyone", then Deploy ▸ New version.'); }
-  };
-  s.onerror=()=>{ if(done)return; delete window[fn]; s.remove();
-    alert('✗ Could not reach the Google Sheet from this device.\n\nOn a laptop this is usually:\n• Network / Wi-Fi / firewall blocking script.google.com — try a phone hotspot.\n• An ad-blocker or privacy extension — try an incognito window.\n• A wrong /exec URL or a deployment not shared with "Anyone".\n\nTip: open the /exec URL directly in this browser. If you see a Google sign-in or an error instead of data, that is the cause.'); };
-  s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'ping=1&callback='+fn+'&t='+Date.now();
-  document.body.appendChild(s);
-  setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){}
-    alert('✗ Timed out reaching the Google Sheet.\n\nThe request never came back — usually a firewall/network block or an extension. Try an incognito window or a phone hotspot, and open the /exec URL directly to confirm it loads.'); } },15000);
+  let settled=false;
+  const ok=(rows)=>{ if(settled)return; settled=true; alert('✓ Connection OK.\n\nReached the Google Sheet — it has '+rows+' row(s). Syncing should work on this device.'); };
+  const bad=()=>{ if(settled)return; settled=true; alert('✗ Could not reach the Google Sheet on this device.\n\nMost common on a phone:\n• The page is open inside another app (WhatsApp / Facebook / Messenger). Tap the ⋮ menu and choose "Open in Chrome/Browser".\n• A privacy browser or ad-blocker (Brave, DuckDuckGo, Opera, a blocker app) is blocking script.google.com. Try Chrome or Safari.\n• Network/firewall or a data-saver is blocking it. Try mobile data or a different Wi-Fi.\n\nTip: open the /exec URL directly in this browser — if it shows data, the block is on this app/browser.'); };
+  // fetch ping
+  try{
+    fetch(GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'ping=1&t='+Date.now(),{redirect:'follow'})
+      .then(r=>r.text())
+      .then(t=>{ let d=null; try{ d=JSON.parse(t); }catch(e){}
+        if(d&&d.ok) ok(d.rows); else jsonpPing(); })
+      .catch(()=>jsonpPing());
+  }catch(e){ jsonpPing(); }
+  function jsonpPing(){
+    if(settled) return;
+    const fn='__p'+Date.now()+Math.floor(Math.random()*1000); let done=false;
+    const s=document.createElement('script');
+    window[fn]=res=>{ done=true; delete window[fn]; s.remove(); (res&&res.ok)?ok(res.rows):bad(); };
+    s.onerror=()=>{ if(done)return; done=true; delete window[fn]; s.remove(); bad(); };
+    s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'ping=1&callback='+fn+'&t='+Date.now();
+    document.body.appendChild(s);
+    setTimeout(()=>{ if(!done){ done=true; try{delete window[fn]; s.remove();}catch(e){} bad(); } },15000);
+  }
 }
 
 /* =========================================================
@@ -582,23 +593,56 @@ function finishAndSubmit(){
   renderDone(ended);
   if(GAS_URL){
     setSyncStatus('checking','Sending to Google Sheet…');
-    sendToSheet(rec,ok=>{
-      if(ok){ rec._synced=true; Store.set(REC_KEY,records); }
-      setSyncStatus(ok?'on':'warn', ok?'☁ Saved to Google Sheet':'⚠ Not saved — kept on this phone. Use “Sync to Google Sheet” in Records once online.');
-    });
+    sendToSheet(rec,ok=>afterSend(ok));
   }
 }
-/* Reliable cross-origin write: JSONP GET that returns confirmation.
-   cb(ok, reason) where reason is 'ok' | 'blocked' | 'timeout' | 'nourl'. */
+/* Shared handler for submit-time and retry sends: updates the pill and shows a
+   one-tap retry when a send doesn't reach the Sheet. */
+function afterSend(ok){
+  const rec=records[records.length-1];
+  if(ok && rec){ rec._synced=true; Store.set(REC_KEY,records); }
+  setSyncStatus(ok?'on':'warn', ok?'☁ Saved to Google Sheet':'⚠ Not saved to the Sheet — kept safely on this phone.');
+  const box=document.getElementById('doneRetry');
+  if(box) box.innerHTML = ok ? '' :
+    `<button class="btn btn-ghost btn-block" style="margin-top:12px" onclick="retryLastSync()">Try sync again</button>`;
+}
+function retryLastSync(){
+  const rec=records[records.length-1]; if(!rec) return;
+  setSyncStatus('checking','Sending to Google Sheet…');
+  const box=document.getElementById('doneRetry'); if(box) box.innerHTML='';
+  sendToSheet(rec,ok=>afterSend(ok));
+}
+/* Cross-origin write. Tries a normal fetch POST first — its request type is
+   "xmlhttprequest", which slips past ad-blocker / privacy rules that only block
+   <script> loads to script.google.com (the usual "blocked by browser" cause).
+   Falls back to JSONP script injection. The backend de-dupes, so trying both
+   never creates a duplicate row. cb(ok, reason): 'ok'|'blocked'|'timeout'|'nourl'. */
 function sendToSheet(rec,cb){
   if(!GAS_URL){ cb&&cb(false,'nourl'); return; }
-  const fn='__w'+Date.now()+Math.floor(Math.random()*1000); let done=false;
-  const s=document.createElement('script');
-  window[fn]=res=>{ done=true; delete window[fn]; s.remove(); cb&&cb(!!(res&&res.status==='ok'),'ok'); };
-  s.onerror=()=>{ if(done)return; done=true; delete window[fn]; s.remove(); cb&&cb(false,'blocked'); };
-  s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'data='+encodeURIComponent(JSON.stringify(rec))+'&callback='+fn+'&t='+Date.now();
-  document.body.appendChild(s);
-  setTimeout(()=>{ if(!done){ done=true; try{delete window[fn]; s.remove();}catch(e){} cb&&cb(false,'timeout'); } },15000);
+  let settled=false;
+  const finish=(ok,reason)=>{ if(settled) return; settled=true; cb&&cb(ok,reason); };
+
+  // 1) fetch POST (text/plain = "simple" request, no CORS preflight)
+  try{
+    fetch(GAS_URL,{ method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify(rec), redirect:'follow' })
+      .then(r=>r.text())
+      .then(t=>{ let ok=false; try{ ok=JSON.parse(t).status==='ok'; }catch(e){}
+        if(ok) finish(true,'ok'); else jsonp(); })
+      .catch(()=>jsonp());
+  }catch(e){ jsonp(); }
+
+  // 2) JSONP fallback (script injection)
+  function jsonp(){
+    if(settled) return;
+    const fn='__w'+Date.now()+Math.floor(Math.random()*1000); let jdone=false;
+    const s=document.createElement('script');
+    window[fn]=res=>{ jdone=true; delete window[fn]; s.remove(); finish(!!(res&&res.status==='ok'),'ok'); };
+    s.onerror=()=>{ if(jdone)return; jdone=true; delete window[fn]; s.remove(); finish(false,'blocked'); };
+    s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'data='+encodeURIComponent(JSON.stringify(rec))+'&callback='+fn+'&t='+Date.now();
+    document.body.appendChild(s);
+    setTimeout(()=>{ if(!jdone){ jdone=true; try{delete window[fn]; s.remove();}catch(e){} finish(false,'timeout'); } },15000);
+  }
 }
 function setSyncStatus(cls,text){ const el=document.getElementById('syncPill'); if(!el) return; el.className='sync '+cls; el.textContent=text; }
 
@@ -607,8 +651,9 @@ function renderDone(declined){
   app.innerHTML=`<div class="body"><div class="done">
     <div class="circle ${declined?'end':'ok'}">${declined?I.door:I.check}</div>
     <h2>${declined?'Interview ended':'Interview saved'}</h2>
-    <p>${declined?'The participant declined to take part. Thank you for recording this.':'This response has been recorded'+(synced?' and sent to Google Sheets.':' on this device.')}</p>
+    <p>${declined?'The participant declined to take part. Thank you for recording this.':'This response is saved on this phone'+(synced?'. Sending it to Google Sheets…':'.')}</p>
     <span class="sync ${synced?'checking':'off'}" id="syncPill">${synced?'Checking Google Sheet…':'◍ Saved on this phone only'}</span>
+    <div id="doneRetry"></div>
     <div class="actions">
       <button class="btn btn-primary btn-block" onclick="startSurvey()">Start new interview</button>
       <button class="btn btn-ghost btn-block" onclick="openDash()">Go to dashboard</button>
@@ -707,13 +752,27 @@ function openDash(retry){
   });
 }
 function fetchLive(cb){
-  const fn='__cb'+Date.now();
-  const s=document.createElement('script'); let done=false;
-  window[fn]=data=>{ done=true; delete window[fn]; s.remove(); cb(data); };
-  s.onerror=()=>{ if(done)return; delete window[fn]; s.remove(); cb(null); };
-  s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'callback='+fn+'&t='+Date.now();
-  document.body.appendChild(s);
-  setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){} cb(null);} },20000);
+  let settled=false;
+  const finish=v=>{ if(settled) return; settled=true; cb(v); };
+  // 1) fetch GET (xmlhttprequest — bypasses <script>-only blockers)
+  try{
+    fetch(GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'t='+Date.now(),{redirect:'follow'})
+      .then(r=>r.text())
+      .then(t=>{ let d=null; try{ d=JSON.parse(t); }catch(e){}
+        if(d&&Array.isArray(d)) finish(d); else jsonp(); })
+      .catch(()=>jsonp());
+  }catch(e){ jsonp(); }
+  // 2) JSONP fallback
+  function jsonp(){
+    if(settled) return;
+    const fn='__cb'+Date.now()+Math.floor(Math.random()*1000);
+    const s=document.createElement('script'); let done=false;
+    window[fn]=data=>{ done=true; delete window[fn]; s.remove(); finish(data); };
+    s.onerror=()=>{ if(done)return; done=true; delete window[fn]; s.remove(); finish(null); };
+    s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'callback='+fn+'&t='+Date.now();
+    document.body.appendChild(s);
+    setTimeout(()=>{ if(!done){ done=true; try{delete window[fn]; s.remove();}catch(e){} finish(null);} },20000);
+  }
 }
 function refreshDash(){ openDash(); }
 function setFilter(f){ dashFilter2=f; drawDash(); }
@@ -947,9 +1006,9 @@ function syncAllToSheet(forceAll){
       Store.set(REC_KEY,records);
       if(fail){
         const hint = lastReason==='blocked'
-          ? 'The request was blocked before it reached Google — on a laptop this is almost always a browser extension or ad-blocker. Open this page in an incognito/private window (extensions are off there) and try again.'
+          ? 'The request was blocked before reaching Google. This is a browser block:\n• If the page is open inside WhatsApp/Facebook/Messenger, tap ⋮ and choose "Open in Chrome/Browser".\n• A privacy browser or ad-blocker (Brave, DuckDuckGo, blocker app) can block script.google.com — try Chrome or Safari.'
           : lastReason==='timeout'
-          ? 'The request timed out — usually a network or firewall block on this connection. Try tethering to a phone hotspot, then sync again.'
+          ? 'The request timed out — usually a network, firewall, or data-saver block on this connection. Try mobile data or a phone hotspot, then sync again.'
           : 'Check the Google Sheet connection and try again.';
         alert(ok+' synced, '+fail+' failed.\n\n'+hint);
       } else {
